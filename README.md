@@ -101,3 +101,47 @@ commit and redeploy, or rebuild from a previous tag:
 git revert <commit>          # revert a bad release
 docker compose up -d --build # redeploy the reverted version
 ```
+
+## Cloud Mapping (Production Architecture)
+
+This local, zero-cost development stack maps 1:1 to Google Cloud managed production services without requiring local machine orchestration:
+
+| Stage | Local Development Flow | Managed Cloud Service | Cloud Implementation Details |
+| :--- | :--- | :--- | :--- |
+| **Source & CI** | Git commits + GitHub Actions (`ci.yml`) | **GitHub Actions / Cloud Build** | Triggers on commit/PR, executes automated tests, and creates container build triggers. |
+| **Image Registry** | Local Docker image cache (`ci-container-monitoring-lab:local`) | **Google Artifact Registry** | Secure repository for versioned container images (e.g., `us-central1-docker.pkg.dev/$PROJECT_ID/lab-repo/app:$COMMIT_SHA`). |
+| **Container Runtime** | Docker Compose (`docker compose up`) | **Google Cloud Run** | Fully managed serverless container runtime with autoscaling, HTTPS termination, and revision management. |
+| **Health Checks** | Compose `healthcheck` (`curl /health`) | **Cloud Run Startup & Liveness Probes** | Automated health checks querying `/health` to route traffic only to ready instances. |
+| **Metrics Collection** | Prometheus scraping (`app:3000/metrics`) | **Google Cloud Monitoring (Metrics Explorer)** | Scrapes Prometheus-formatted metrics via Google Cloud Managed Service for Prometheus or Cloud Monitoring agent. |
+| **Observability** | Grafana "Service Overview" Dashboard | **Google Cloud Monitoring Dashboards** | Custom dashboards tracking request rates, route breakdowns, and p95 latencies. |
+| **Rollback Strategy** | `git revert <commit>` + `docker compose up -d` | **Cloud Run Revision Traffic Splitting** | Instant atomic rollback to previous revision: `gcloud run services update-traffic app --to-revisions=PREV_REVISION=100`. |
+
+### Cloud CI/CD Deployment Workflow
+
+```mermaid
+flowchart LR
+    A[git push commit] --> B[GitHub Actions / Cloud Build]
+    B -->|Build & Tag Image| C[Google Artifact Registry]
+    C -->|Deploy Revision| D[Google Cloud Run]
+    D -->|Scrape Metrics| E[Google Cloud Monitoring]
+    E -->|Visualize| F[Cloud Monitoring Dashboard]
+    D -.->|Rollback to previous revision| D
+```
+
+---
+
+## Integration Gaps & Repairs Summary
+
+1. **Build and Deploy Sequencing (CI)**:
+   - Upgraded Node.js runner from deprecated `12` to `20`.
+   - Added dependency installation (`npm ci`) prior to running unit tests (`npm test`).
+2. **Config Consistency (Ports & Environment)**:
+   - Aligned published ports in `docker-compose.yml` (`8080:3000`) with in-container port (`3000`).
+   - Added `MAINTENANCE_MODE=off` to ensure health probes return HTTP 200 `{"status":"ok"}`.
+3. **Monitoring Visibility (Prometheus & Grafana)**:
+   - Corrected Prometheus scrape metrics path to `/metrics` (was `/prometheus`).
+   - Pointed Prometheus target to container service `app:3000` (was `app:9090`).
+   - Corrected Grafana datasource URL to `http://prometheus:9090` (was `http://prometheus:9091`).
+4. **Rollback Readiness**:
+   - Verified service recovery via Git revert and redeployment, returning unhealthy/maintenance states to 200 OK.
+
